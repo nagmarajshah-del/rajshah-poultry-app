@@ -1,0 +1,129 @@
+.dues-page {
+  --dues-ink: #292e34;
+  --dues-muted: #7b7c7d;
+  --dues-red: #a82f38;
+  --dues-line: #e7e0d6;
+  --dues-card: #fbf9f4;
+  color: var(--dues-ink);
+  animation: dues-enter .32s ease both;
+}
+@keyframes dues-enter { from { opacity: 0; transform: translateY(7px); } to { opacity: 1; transform: translateY(0); } }
+.dues-heading { display:flex; justify-content:space-between; align-items:flex-end; gap:22px; margin-bottom:25px; }
+.dues-heading h1 { margin:8px 0 5px; font-family:var(--font-display); font-size:clamp(30px,4vw,42px); line-height:1.08; letter-spacing:-.035em; }
+.dues-heading p { margin:0; color:var(--dues-muted); font-size:13px; }
+.dues-eyebrow { color:var(--dues-red); font-size:10px; font-weight:800; letter-spacing:.16em; text-transform:uppercase; }
+.dues-total-chip { display:flex; align-items:center; gap:12px; padding:12px 16px; border:1px solid #ead8d2; border-radius:14px; background:#f7ebe5; white-space:nowrap; }
+.dues-total-icon { width:34px; height:34px; display:grid; place-items:center; border-radius:11px; background:#a82f38; color:#fff; }
+.dues-total-chip small,.dues-total-chip strong { display:block; }
+.dues-total-chip small { margin-bottom:3px; color:#8c6d68; font-size:9px; font-weight:800; letter-spacing:.08em; text-transform:uppercase; }
+.dues-total-chip strong { color:#952d35; font-size:19px; letter-spacing:-.03em; }
+.dues-layout { display:grid; grid-template-columns:minmax(0,1.05fr) minmax(0,.95fr); gap:16px; align-items:stretch; }
+.dues-collection,.dues-allocation { min-width:0; padding:22px; }
+.dues-card-heading { display:flex; align-items:flex-start; gap:12px; margin-bottom:21px; }
+.dues-step { width:32px; height:32px; flex:0 0 auto; display:grid; place-items:center; border-radius:10px; background:#f1e1dc; color:#a12f38; font-size:10px; font-weight:800; }
+.dues-step-muted { background:#eee9dc; color:#796d57; }
+.dues-card-heading h2 { margin:2px 0 4px; font-family:var(--font-display); font-size:20px; }
+.dues-card-heading p { margin:0; color:#858689; font-size:11px; line-height:1.5; }
+.dues-field { display:block; margin:0 0 16px; }
+.dues-field > span { display:flex; justify-content:space-between; margin-bottom:7px; color:#505257; font-size:11px; font-weight:750; }
+.dues-field > span small { color:#92908b; font-size:9px; letter-spacing:.08em; }
+.dues-field select,.dues-amount-input input { width:100%; height:46px; border:1px solid #ded8cf; border-radius:10px; background:#fffdf9; color:#292e34; font-size:13px; outline:none; }
+.dues-field select { padding:0 12px; }
+.dues-field select:focus,.dues-amount-input:focus-within { border-color:#b74248; box-shadow:0 0 0 3px #ae354012; }
+.dues-customer-identity { display:flex; align-items:center; gap:10px; min-width:0; margin:-3px 0 16px; padding:11px; border:1px solid #ece3d8; border-radius:12px; background:#f8f4ec; }
+.dues-avatar { width:36px; height:36px; flex:0 0 auto; display:grid; place-items:center; border-radius:12px; background:#ead9d7; color:#96303a; font-size:14px; font-weight:800; }
+.dues-customer-identity > div { min-width:0; flex:1; }
+.dues-customer-identity > div strong,.dues-customer-identity > div span { display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.dues-customer-identity > div strong { font-size:12px; }
+.dues-customer-identity > div span { margin-top:3px; color:#858689; font-size:10px; }
+.dues-customer-identity > b { color:#a12f38; font-size:13px; text-align:right; white-space:nowrap; }
+.dues-customer-identity > b small { display:block; margin-top:2px; color:#8b8881; font-size:9px; font-weight:600; }
+.dues-amount-input { display:flex; align-items:center; height:48px; border:1px solid #ded8cf; border-radius:10px; background:#fffdf9; }
+.dues-amount-input > span { padding-left:13px; color:#a12f38; font-size:16px; font-weight:700; }
+.dues-amount-input input { height:44px; padding:0 12px 0 8px; border:0; background:transparent; font-size:16px; font-weight:700; }
+.dues-amount-input input:focus { outline:none; }
+.dues-amount-input input:disabled { cursor:not-allowed; opacity:.55; }
+.dues-method { min-width:0; margin:0 0 17px; padding:0; border:0; }
+.dues-method legend { margin-bottom:8px; color:#505257; font-size:11px; font-weight:750; }
+.dues-method-options { display:grid; grid-template-columns:1fr 1fr; gap:9px; }
+.dues-method-options button { height:42px; display:flex; align-items:center; justify-content:center; gap:8px; border:1px solid #e3dcd2; border-radius:10px; background:#fffdf9; color:#696a6d; font-size:12px; font-weight:700; transition:background .16s,border-color .16s,color .16s,transform .16s; }
+.dues-method-options button:hover { transform:translateY(-1px); border-color:#d5b5b1; }
+.dues-method-options button.selected { border-color:#c98c88; background:#f7eae5; color:#a12f38; }
+.dues-submit { width:100%; min-height:45px; display:flex; justify-content:center; align-items:center; gap:8px; margin-top:3px; border:0; border-radius:11px; background:#a82f38; color:white; box-shadow:0 7px 16px #a82f3824; font-size:12px; font-weight:750; transition:transform .18s,background .18s,opacity .18s; }
+.dues-submit:hover:not(:disabled) { transform:translateY(-1px); background:#8f252e; }
+.dues-submit:disabled { cursor:not-allowed; opacity:.48; box-shadow:none; }
+.dues-clear-notice,.dues-feedback { display:flex; align-items:flex-start; gap:8px; padding:11px 12px; margin-bottom:15px; border-radius:10px; font-size:11px; line-height:1.5; }
+.dues-clear-notice { border:1px solid #d9e5d8; background:#f0f5ed; color:#4d6d4d; }
+.dues-feedback-error { border:1px solid #e9c7c3; background:#fff2ef; color:#8f3033; }
+.dues-feedback-success { border:1px solid #d9e5d8; background:#f0f5ed; color:#4d6d4d; }
+.dues-feedback svg,.dues-clear-notice svg { flex:0 0 auto; margin-top:1px; }
+.dues-fifo-note { display:flex; align-items:center; gap:6px; margin:-7px 0 9px; color:#8b8171; font-size:10px; }
+.dues-bill-list { display:flex; flex-direction:column; gap:7px; }
+.dues-bill-row { min-width:0; display:grid; grid-template-columns:29px minmax(0,1fr) auto auto; align-items:center; gap:9px; padding:10px 9px; border:1px solid #eee7dd; border-radius:11px; background:#fffdf8; transition:background .18s,border-color .18s; }
+.dues-bill-row.has-allocation { border-color:#dfbdb8; background:#fbf1ec; }
+.dues-bill-order { width:26px; height:26px; display:grid; place-items:center; border-radius:8px; background:#f1eee7; color:#8b8376; font-size:9px; font-weight:800; }
+.dues-bill-row.has-allocation .dues-bill-order { background:#eed8d3; color:#a12f38; }
+.dues-bill-main { min-width:0; }
+.dues-bill-main strong,.dues-bill-main small,.dues-bill-values b,.dues-bill-values small,.dues-bill-allocation small,.dues-bill-allocation b { display:block; }
+.dues-bill-main strong { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:11px; }
+.dues-bill-main small,.dues-bill-values small,.dues-bill-allocation small { margin-top:3px; color:#8d8b87; font-size:9px; }
+.dues-bill-values { text-align:right; }
+.dues-bill-values b { font-size:11px; }
+.dues-bill-allocation { min-width:73px; text-align:right; }
+.dues-bill-allocation b { color:#a12f38; font-size:11px; }
+.dues-bill-allocation > span { color:#b1aca3; }
+.dues-allocation-total { display:flex; justify-content:space-between; align-items:center; gap:10px; margin-top:12px; padding:12px 2px 0; border-top:1px solid #e9e1d6; color:#77736c; font-size:11px; font-weight:700; }
+.dues-allocation-total strong { color:#a12f38; font-size:15px; }
+.dues-overflow-hint { margin:9px 0 0; color:#8c623e; font-size:10px; line-height:1.45; }
+.dues-allocation-empty { min-height:164px; display:flex; flex-direction:column; justify-content:center; align-items:center; gap:11px; padding:20px; border:1px dashed #e4dbcf; border-radius:13px; color:#8a8379; text-align:center; font-size:11px; line-height:1.55; }
+.dues-allocation-empty svg { color:#a38d74; }
+.dues-balances-section,.dues-history-section { margin-top:31px; }
+.dues-section-title { display:flex; justify-content:space-between; align-items:flex-end; gap:14px; margin-bottom:13px; }
+.dues-section-title h2 { margin:6px 0 0; font-family:var(--font-display); font-size:21px; }
+.dues-count { padding:7px 10px; border:1px solid #e5ddd1; border-radius:9px; background:#faf8f2; color:#777a7d; font-size:10px; font-weight:700; white-space:nowrap; }
+.dues-balance-list,.dues-history-list { overflow:hidden; border:1px solid var(--dues-line); border-radius:15px; background:var(--dues-card); }
+.dues-balance-row { width:100%; display:grid; grid-template-columns:38px minmax(0,1fr) minmax(80px,.55fr) auto; align-items:center; gap:11px; padding:12px 16px; border:0; border-bottom:1px solid #eee8df; background:transparent; color:inherit; text-align:left; transition:background .16s; }
+.dues-balance-row:last-child,.dues-history-row:last-child { border-bottom:0; }
+.dues-balance-row:hover,.dues-balance-row.active { background:#f8f0e9; }
+.dues-balance-name { min-width:0; }
+.dues-balance-name strong,.dues-balance-name small { display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.dues-balance-name strong { font-size:12px; }
+.dues-balance-name small { margin-top:4px; color:#858689; font-size:10px; }
+.dues-balance-bills { color:#88857f; font-size:10px; }
+.dues-balance-value { color:#a12f38; font-size:13px; white-space:nowrap; }
+.dues-all-clear,.dues-history-empty { display:flex; align-items:center; gap:9px; padding:18px; border:1px solid #e7e0d6; border-radius:14px; background:#fbf9f4; color:#77796f; font-size:11px; }
+.dues-all-clear svg { color:#66805e; }
+.dues-history-row { min-width:0; display:grid; grid-template-columns:35px minmax(130px,1fr) minmax(140px,1.05fr) auto; align-items:center; gap:12px; padding:13px 16px; border-bottom:1px solid #eee8df; }
+.dues-history-icon { width:33px; height:33px; display:grid; place-items:center; border-radius:10px; background:#f1e6dc; color:#9b453d; }
+.dues-history-main { min-width:0; }
+.dues-history-main strong,.dues-history-main small { display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.dues-history-main strong { font-size:11px; }
+.dues-history-main small { margin-top:4px; color:#858689; font-size:9px; }
+.dues-history-allocation { display:flex; flex-wrap:wrap; gap:5px; }
+.dues-history-allocation small { padding:4px 6px; border-radius:6px; background:#f3efe7; color:#77736c; font-size:9px; white-space:nowrap; }
+.dues-history-allocation b { margin-left:3px; color:#56534d; }
+.dues-history-amount { color:#52704b; font-size:12px; white-space:nowrap; }
+.dues-empty { padding:38px 22px; text-align:center; }
+.dues-empty-mark { width:48px; height:48px; margin:0 auto 14px; display:grid; place-items:center; border-radius:15px; background:#f0e4dc; color:#a3333b; }
+.dues-empty h2 { margin:0 0 7px; font-family:var(--font-display); font-size:20px; }
+.dues-empty p { margin:0; color:#818285; font-size:12px; line-height:1.65; }
+@media(max-width:760px) {
+  .dues-heading { align-items:flex-start; flex-direction:column; gap:14px; margin-bottom:19px; }
+  .dues-total-chip { align-self:stretch; }
+  .dues-layout { grid-template-columns:1fr; gap:12px; }
+  .dues-collection,.dues-allocation { padding:18px; }
+  .dues-balances-section,.dues-history-section { margin-top:25px; }
+  .dues-balance-row { grid-template-columns:36px minmax(0,1fr) auto; gap:9px; padding:12px; }
+  .dues-balance-bills { grid-column:2; grid-row:2; }
+  .dues-balance-value { grid-column:3; grid-row:1 / span 2; }
+  .dues-history-row { grid-template-columns:34px minmax(0,1fr) auto; gap:9px; padding:12px; }
+  .dues-history-allocation { grid-column:2 / -1; grid-row:2; }
+  .dues-history-amount { grid-column:3; grid-row:1; }
+}
+@media(max-width:390px) {
+  .dues-bill-row { grid-template-columns:25px minmax(0,1fr) auto; gap:7px; padding:9px 7px; }
+  .dues-bill-allocation { grid-column:2 / -1; display:flex; justify-content:space-between; align-items:center; text-align:left; padding-left:32px; }
+  .dues-bill-allocation small { margin-top:0; }
+  .dues-section-title h2 { font-size:19px; }
+  .dues-history-row { grid-template-columns:31px minmax(0,1fr) auto; }
+}

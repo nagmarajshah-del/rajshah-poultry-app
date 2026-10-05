@@ -12,26 +12,36 @@ import NotFound from '@/pages/not-found';
 import {
   ArrowLeft, ArrowRight, BadgeIndianRupee, BookOpen, CalendarDays, ChartNoAxesCombined,
   Check, ChevronRight, ClipboardList, Download, Edit3, FilePlus2, History, LogOut,
-  MessageCircle, Plus, Printer, Search, Settings2, Store, Trash2, Users, X,
+  MessageCircle, Plus, Printer, Search, Settings2, Store, Trash2, Users, Wallet, X,
 } from 'lucide-react';
 import { useForm } from 'react-hook-form';
 import { Link, Redirect, Route, Router as WouterRouter, Switch, useLocation, useParams } from 'wouter';
 import { z } from 'zod';
 
-type Customer = { id: string; shopName: string; ownerName: string; address: string; whatsapp: string };
+type Customer = { id: string; name: string; phone: string; address: string };
+type PaymentMethod = 'cash' | 'upi';
+type PaymentChoice = PaymentMethod | 'dues';
+type PaymentEntry = { id: string; amount: number; method: PaymentMethod; recordedAt: string };
+type LedgerAllocation = { orderId: string; amount: number };
+type LedgerPayment = {
+  id: string; customerId: string; amount: number; method: PaymentMethod;
+  recordedAt: string; allocations: LedgerAllocation[];
+};
 type RateMap = Record<string, number>;
 type Order = {
   id: string; billNumber: string; createdAt: string; customerId: string;
   customer: Customer; quantity: number; weightKg: number; ratePerKg: number; total: number;
+  paymentChoice?: PaymentChoice; payments?: PaymentEntry[];
 };
+type LegacyCustomer = Partial<Customer> & { shopName?: string; ownerName?: string; whatsapp?: string };
+type StoredOrder = Omit<Order, 'customer'> & { customer: LegacyCustomer };
 const customerSchema = z.object({
-  shopName: z.string().trim().min(1, 'Enter the shop name.'),
-  ownerName: z.string().trim().min(1, 'Enter the owner name.'),
-  address: z.string().trim().min(1, 'Enter the address.'),
-  whatsapp: z.string().trim().refine((value) => {
+  name: z.string().trim().min(1, 'Enter the customer name.'),
+  phone: z.string().trim().refine((value) => {
     const digits = value.replace(/\D/g, '');
     return digits.length >= 10 && digits.length <= 15;
-  }, 'Enter a valid WhatsApp number.'),
+  }, 'Enter a valid phone or WhatsApp number.'),
+  address: z.string().trim().min(1, 'Enter the address.'),
 });
 const rateSchema = z.object({
   date: z.string().min(1, 'Choose a calendar day.'),
@@ -41,6 +51,9 @@ const orderSchema = z.object({
   customerId: z.string().min(1, 'Select a saved customer.'),
   quantity: z.string().refine((value) => Number.isInteger(Number(value)) && Number(value) >= 1, 'Enter a whole number of at least one piece.'),
   weight: z.string().refine((value) => Number.isFinite(Number(value)) && Number(value) > 0, 'Enter a weight greater than zero.'),
+  paymentChoice: z.string().min(1, 'Choose how this bill is being paid.'),
+  paidNow: z.string().refine((value) => Number.isFinite(Number(value)) && Number(value) >= 0, 'Enter an amount of zero or more.'),
+  partialMethod: z.enum(['cash', 'upi']),
 });
 type CustomerFormValues = z.infer<typeof customerSchema>;
 type RateFormValues = z.infer<typeof rateSchema>;
@@ -58,7 +71,37 @@ const localDateKey = (date = new Date()) => `${date.getFullYear()}-${String(date
 const orderStorageKey = (id: string) => `rajshah-farm:orders:v1:${id}`;
 const customerStorageKey = (id: string) => `rajshah-farm:customers:v1:${id}`;
 const rateStorageKey = (id: string) => `rajshah-farm:rates:v1:${id}`;
+const ledgerStorageKey = (id: string) => `rajshah-farm:payments:v1:${id}`;
 const randomId = () => globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+const roundMoney = (amount: number) => Math.round((amount + Number.EPSILON) * 100) / 100;
+
+function normalizeCustomer(value: LegacyCustomer): Customer {
+  return {
+    id: value.id || randomId(),
+    name: value.name?.trim() || value.ownerName?.trim() || value.shopName?.trim() || 'Customer',
+    phone: value.phone?.trim() || value.whatsapp?.trim() || '',
+    address: value.address?.trim() || '',
+  };
+}
+function orderPaymentTotals(order: Order, ledgerPayments: LedgerPayment[]) {
+  if (!Array.isArray(order.payments)) return null;
+  const totals: Record<PaymentMethod, number> = { cash: 0, upi: 0 };
+  for (const payment of order.payments) totals[payment.method] += payment.amount;
+  for (const payment of ledgerPayments) {
+    if (payment.customerId !== order.customerId) continue;
+    const allocated = payment.allocations
+      .filter((allocation) => allocation.orderId === order.id)
+      .reduce((sum, allocation) => sum + allocation.amount, 0);
+    totals[payment.method] += allocated;
+  }
+  totals.cash = roundMoney(totals.cash);
+  totals.upi = roundMoney(totals.upi);
+  const paid = roundMoney(totals.cash + totals.upi);
+  return { cash: totals.cash, upi: totals.upi, paid, due: roundMoney(Math.max(0, order.total - paid)) };
+}
+function orderRemainingDue(order: Order, ledgerPayments: LedgerPayment[]) {
+  return orderPaymentTotals(order, ledgerPayments)?.due ?? 0;
+}
 
 if (!clerkPubKey) throw new Error('Missing VITE_CLERK_PUBLISHABLE_KEY in .env file');
 const clerkAppearance = {
@@ -94,13 +137,15 @@ function persist<T>(key: string, value: T) {
   catch { try { sessionStorage.setItem(key, serialized); } catch { /* browser storage unavailable */ } }
 }
 function useFarmData(userId: string) {
-  const [customers, setCustomers] = useState<Customer[]>(() => safeLoad(customerStorageKey(userId), []));
+  const [customers, setCustomers] = useState<Customer[]>(() => safeLoad<LegacyCustomer[]>(customerStorageKey(userId), []).map(normalizeCustomer));
   const [rates, setRates] = useState<RateMap>(() => safeLoad(rateStorageKey(userId), {}));
-  const [orders, setOrders] = useState<Order[]>(() => safeLoad(orderStorageKey(userId), []));
+  const [orders, setOrders] = useState<Order[]>(() => safeLoad<StoredOrder[]>(orderStorageKey(userId), []).map((order) => ({ ...order, customer: normalizeCustomer(order.customer) })));
+  const [ledgerPayments, setLedgerPayments] = useState<LedgerPayment[]>(() => safeLoad(ledgerStorageKey(userId), []));
   const saveCustomers = (value: Customer[]) => { setCustomers(value); persist(customerStorageKey(userId), value); };
   const saveRates = (value: RateMap) => { setRates(value); persist(rateStorageKey(userId), value); };
   const saveOrders = (value: Order[]) => { setOrders(value); persist(orderStorageKey(userId), value); };
-  return { customers, rates, orders, saveCustomers, saveRates, saveOrders };
+  const saveLedgerPayments = (value: LedgerPayment[]) => { setLedgerPayments(value); persist(ledgerStorageKey(userId), value); };
+  return { customers, rates, orders, ledgerPayments, saveCustomers, saveRates, saveOrders, saveLedgerPayments };
 }
 
 function Brand({ compact = false }: { compact?: boolean }) {
@@ -113,6 +158,7 @@ const NAV = [
   { href: '/workspace', label: 'Overview', Icon: ChartNoAxesCombined },
   { href: '/workspace/new-order', label: 'New order', Icon: FilePlus2 },
   { href: '/workspace/history', label: 'History', Icon: History },
+  { href: '/workspace/dues', label: 'Dues & payments', Icon: Wallet },
   { href: '/workspace/customers', label: 'Customers', Icon: Users },
   { href: '/workspace/rates', label: 'Mandi rate', Icon: BadgeIndianRupee },
 ];
@@ -179,7 +225,7 @@ function Dashboard({ userId }: { userId: string }) {
     </div>
     <div className="quick-actions">
       <Link href="/workspace/new-order" className="panel quick-action" data-testid="link-quick-new-order"><span className="quick-icon"><FilePlus2 size={19} /></span><span><b>Record an order</b><small>Customer, pieces and weight</small></span><ChevronRight size={17} /></Link>
-      <Link href="/workspace/customers" className="panel quick-action" data-testid="link-quick-customers"><span className="quick-icon"><Store size={19} /></span><span><b>Customer directory</b><small>Manage shops and contacts</small></span><ChevronRight size={17} /></Link>
+      <Link href="/workspace/customers" className="panel quick-action" data-testid="link-quick-customers"><span className="quick-icon"><Store size={19} /></span><span><b>Customer directory</b><small>Manage customer contacts</small></span><ChevronRight size={17} /></Link>
       <Link href="/workspace/history" className="panel quick-action" data-testid="link-quick-history"><span className="quick-icon"><BookOpen size={19} /></span><span><b>Order history</b><small>Browse all saved receipts</small></span><ChevronRight size={17} /></Link>
     </div>
     <div className="section-row"><h2>Recent orders</h2><Link className="text-link" href="/workspace/history" data-testid="link-view-all-orders">View history <ArrowRight size={14} /></Link></div>
@@ -195,7 +241,7 @@ function EmptyState({ title, copy, action }: { title: string; copy: string; acti
 function OrderList({ orders }: { orders: Order[] }) {
   const [, setLocation] = useLocation();
   return <div className="order-list" data-testid="list-orders">{orders.map((order) => <button className="panel order-row" key={order.id} type="button" onClick={() => setLocation(`/workspace/receipt/${order.id}`)} data-testid={`button-open-order-${order.id}`}>
-    <span className="order-main"><span className="order-initial">{order.customer.shopName.slice(0, 1).toUpperCase()}</span><span><b>{order.customer.shopName}</b><small>{order.billNumber} · {new Intl.DateTimeFormat('en-IN', { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(order.createdAt))}</small></span></span>
+    <span className="order-main"><span className="order-initial">{order.customer.name.slice(0, 1).toUpperCase()}</span><span><b>{order.customer.name}</b><small>{order.billNumber} · {new Intl.DateTimeFormat('en-IN', { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(order.createdAt))}</small></span></span>
     <span className="order-amount">{money(order.total)}</span><span className="order-weight">{order.quantity} pieces · {order.weightKg} kg</span>
   </button>)}</div>;
 }
@@ -211,14 +257,14 @@ function CustomersPage({ userId }: { userId: string }) {
   const [query, setQuery] = useState('');
   const form = useForm<CustomerFormValues>({
     resolver: zodResolver(customerSchema),
-    defaultValues: { shopName: '', ownerName: '', address: '', whatsapp: '' },
+    defaultValues: { name: '', phone: '', address: '' },
   });
-  const visible = customers.filter((c) => `${c.shopName} ${c.ownerName} ${c.whatsapp}`.toLowerCase().includes(query.toLowerCase())).sort((a, b) => a.shopName.localeCompare(b.shopName));
+  const visible = customers.filter((c) => `${c.name} ${c.phone} ${c.address}`.toLowerCase().includes(query.toLowerCase())).sort((a, b) => a.name.localeCompare(b.name));
   function begin(customer?: Customer) {
     setEditing(customer ?? null);
     form.reset(customer
-      ? { shopName: customer.shopName, ownerName: customer.ownerName, address: customer.address, whatsapp: customer.whatsapp }
-      : { shopName: '', ownerName: '', address: '', whatsapp: '' });
+      ? { name: customer.name, phone: customer.phone, address: customer.address }
+      : { name: '', phone: '', address: '' });
     setShowForm(true);
   }
   function submit(values: CustomerFormValues) {
@@ -227,22 +273,21 @@ function CustomersPage({ userId }: { userId: string }) {
     setShowForm(false);
   }
   function remove(customer: Customer) {
-    if (window.confirm(`Remove ${customer.shopName} from the directory? Existing receipts keep their saved customer details.`)) saveCustomers(customers.filter((c) => c.id !== customer.id));
+    if (window.confirm(`Remove ${customer.name} from the directory? Existing receipts keep their saved customer details.`)) saveCustomers(customers.filter((c) => c.id !== customer.id));
   }
   return <>
-    <PageHeading eyebrow="People & shops" title="Customer directory" copy="Keep your regular buyers and their contact details close." trailing={<button className="primary-button" type="button" onClick={() => begin()} data-testid="button-add-customer"><Plus size={16} /> Add customer</button>} />
+    <PageHeading eyebrow="Customers" title="Customer directory" copy="Keep customer names, phone numbers, and addresses close." trailing={<button className="primary-button" type="button" onClick={() => begin()} data-testid="button-add-customer"><Plus size={16} /> Add customer</button>} />
     {showForm && <Form {...form}><form className="panel form-card" onSubmit={form.handleSubmit(submit)} noValidate data-testid="form-customer"><div className="section-row" style={{ marginTop: 0 }}><h2>{editing ? 'Edit customer' : 'Add a customer'}</h2><button type="button" className="icon-button" aria-label="Close form" onClick={() => setShowForm(false)} data-testid="button-close-customer-form"><X size={17} /></button></div>
       <div className="form-grid">
-        <FormField control={form.control} name="shopName" render={({ field }) => <FormItem className="form-field"><FormLabel>Shop name *</FormLabel><FormControl><input {...field} placeholder="Shop or buyer name" data-testid="input-shop-name" /></FormControl><FormMessage /></FormItem>} />
-        <FormField control={form.control} name="ownerName" render={({ field }) => <FormItem className="form-field"><FormLabel>Owner name *</FormLabel><FormControl><input {...field} placeholder="Contact person" data-testid="input-owner-name" /></FormControl><FormMessage /></FormItem>} />
-        <FormField control={form.control} name="whatsapp" render={({ field }) => <FormItem className="form-field"><FormLabel>WhatsApp number *</FormLabel><FormControl><input {...field} type="tel" inputMode="tel" placeholder="Phone number" data-testid="input-customer-whatsapp" /></FormControl><FormMessage /></FormItem>} />
+        <FormField control={form.control} name="name" render={({ field }) => <FormItem className="form-field"><FormLabel>Customer name *</FormLabel><FormControl><input {...field} autoComplete="name" placeholder="Full name" data-testid="input-customer-name" /></FormControl><FormMessage /></FormItem>} />
+        <FormField control={form.control} name="phone" render={({ field }) => <FormItem className="form-field"><FormLabel>Phone / WhatsApp number *</FormLabel><FormControl><input {...field} type="tel" inputMode="tel" autoComplete="tel" placeholder="Phone or WhatsApp number" data-testid="input-customer-phone" /></FormControl><FormMessage /></FormItem>} />
         <FormField control={form.control} name="address" render={({ field }) => <FormItem className="form-field"><FormLabel>Address *</FormLabel><FormControl><input {...field} placeholder="Area or delivery address" data-testid="input-customer-address" /></FormControl><FormMessage /></FormItem>} />
       </div><div className="form-actions"><button type="submit" className="primary-button" data-testid="button-save-customer">{editing ? 'Save changes' : 'Save customer'}</button><button type="button" className="secondary-button" onClick={() => setShowForm(false)} data-testid="button-cancel-customer">Cancel</button></div>
     </form></Form>}
     <div className="section-row"><h2>Saved customers <span className="pill" data-testid="text-customer-count">{customers.length}</span></h2></div>
-    <div className="list-toolbar"><div className="searchbox"><Search size={16} /><input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search shops or contacts" aria-label="Search customers" data-testid="input-search-customers" /></div></div>
-    {visible.length ? <><div className="table-head"><span>SHOP / OWNER</span><span>WHATSAPP</span><span>ADDRESS</span><span>ACTIONS</span></div>{visible.map((c) => <div className="panel customer-row" key={c.id} data-testid={`row-customer-${c.id}`}><div><b>{c.shopName}</b><small>{c.ownerName}</small></div><div><b>{c.whatsapp}</b><small>WhatsApp contact</small></div><div><b>{c.address || 'Address not added'}</b></div><div className="customer-actions"><button className="icon-button" type="button" onClick={() => begin(c)} aria-label={`Edit ${c.shopName}`} data-testid={`button-edit-customer-${c.id}`}><Edit3 size={15} /></button><button className="icon-button" type="button" onClick={() => remove(c)} aria-label={`Remove ${c.shopName}`} data-testid={`button-delete-customer-${c.id}`}><Trash2 size={15} /></button></div></div>)}</>
-      : <EmptyState title={query ? 'No matching customers' : 'Your directory starts here'} copy={query ? 'Try a different shop name or contact.' : 'Add a saved customer before creating an order. No sample records are added.'} action={!query && <button type="button" className="primary-button" onClick={() => begin()} data-testid="button-empty-add-customer"><Plus size={16} /> Add customer</button>} />}
+    <div className="list-toolbar"><div className="searchbox"><Search size={16} /><input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search name, phone, or address" aria-label="Search customers" data-testid="input-search-customers" /></div></div>
+    {visible.length ? <><div className="table-head"><span>CUSTOMER</span><span>PHONE / WHATSAPP</span><span>ADDRESS</span><span>ACTIONS</span></div>{visible.map((c) => <div className="panel customer-row" key={c.id} data-testid={`row-customer-${c.id}`}><div><b>{c.name}</b></div><div><b>{c.phone}</b><small>Phone / WhatsApp</small></div><div><b>{c.address || 'Address not added'}</b></div><div className="customer-actions"><button className="icon-button" type="button" onClick={() => begin(c)} aria-label={`Edit ${c.name}`} data-testid={`button-edit-customer-${c.id}`}><Edit3 size={15} /></button><button className="icon-button" type="button" onClick={() => remove(c)} aria-label={`Remove ${c.name}`} data-testid={`button-delete-customer-${c.id}`}><Trash2 size={15} /></button></div></div>)}</>
+      : <EmptyState title={query ? 'No matching customers' : 'Your directory starts here'} copy={query ? 'Try a different name, phone number, or address.' : 'Add a saved customer before creating an order. No sample records are added.'} action={!query && <button type="button" className="primary-button" onClick={() => begin()} data-testid="button-empty-add-customer"><Plus size={16} /> Add customer</button>} />}
   </>;
 }
 
