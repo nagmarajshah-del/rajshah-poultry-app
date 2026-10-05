@@ -1,6 +1,6 @@
-# [Project name]
+# Order Billing
 
-_Replace the heading above with the project's name, and this line with one sentence describing what this app does for users._
+A mobile-first billing app for small businesses to enter orders by quantity and weight, create receipts, and share bills through WhatsApp.
 
 ## Run & Operate
 

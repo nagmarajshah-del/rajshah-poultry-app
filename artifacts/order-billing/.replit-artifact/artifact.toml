@@ -1,0 +1,28 @@
+kind = "web"
+previewPath = "/"
+title = "Order Billing"
+description = "A mobile-first order and billing app for entering customer orders by quantity and weight, generating polished receipts, and sharing bills through WhatsApp."
+version = "1.0.0"
+id = "artifacts/order-billing"
+router = "path"
+
+[[services]]
+name = "web"
+paths = [ "/" ]
+localPort = 24454
+
+[services.development]
+run = "pnpm --filter @workspace/order-billing run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/order-billing", "run", "build" ]
+serve = "static"
+publicDir = "artifacts/order-billing/dist/public"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "24454"
+BASE_PATH = "/"
