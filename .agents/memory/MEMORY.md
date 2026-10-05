@@ -1,0 +1,1 @@
+- [Rajshah Poultry Farm](rajshah-poultry-farm.md) — broiler orders are priced by pieces, kilograms, and the daily mandi rate set by the user's father.
