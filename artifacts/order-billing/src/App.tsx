@@ -5,10 +5,12 @@ import { ClerkProvider, SignIn, SignUp, useClerk, useUser } from '@clerk/react';
 import { publishableKeyFromHost } from '@clerk/react/internal';
 import { shadcn } from '@clerk/themes';
 import { ErrorBoundary } from '@/components/error-boundary';
+import BusinessProfileSettings from '@/components/business-profile-settings';
 import DuesLedgerPage, { type DuesCustomer, type DuesPaymentHistoryItem, type RecordDuesPaymentInput } from '@/components/dues-ledger-page';
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from '@/components/ui/form';
 import { Toaster } from '@/components/ui/toaster';
 import { TooltipProvider } from '@/components/ui/tooltip';
+import { DEFAULT_BUSINESS_PROFILE, normalizeBusinessProfile, type BusinessProfile } from '@/lib/business-profile';
 import NotFound from '@/pages/not-found';
 import {
   ArrowLeft, ArrowRight, BadgeIndianRupee, BookOpen, CalendarDays, ChartNoAxesCombined,
@@ -77,6 +79,7 @@ const orderStorageKey = (id: string) => `rajshah-farm:orders:v1:${id}`;
 const customerStorageKey = (id: string) => `rajshah-farm:customers:v1:${id}`;
 const rateStorageKey = (id: string) => `rajshah-farm:rates:v1:${id}`;
 const ledgerStorageKey = (id: string) => `rajshah-farm:payments:v1:${id}`;
+const businessProfileStorageKey = (id: string) => `rajshah-farm:business-profile:v1:${id}`;
 const randomId = () => globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 const roundMoney = (amount: number) => Math.round((amount + Number.EPSILON) * 100) / 100;
 
@@ -205,6 +208,14 @@ function safeLoad<T>(key: string, fallback: T): T {
   if (!raw) return fallback;
   try { return JSON.parse(raw) as T; } catch { return fallback; }
 }
+function safeLoadLocal<T>(key: string, fallback: T): T {
+  try {
+    const raw = localStorage.getItem(key);
+    return raw ? JSON.parse(raw) as T : fallback;
+  } catch {
+    return fallback;
+  }
+}
 function safeLoadArray<T>(key: string): T[] {
   const value = safeLoad<unknown>(key, []);
   return Array.isArray(value) ? value as T[] : [];
@@ -217,6 +228,7 @@ function persist<T>(key: string, value: T) {
 function useFarmData(userId: string) {
   const [customers, setCustomers] = useState<Customer[]>(() => safeLoadArray<LegacyCustomer>(customerStorageKey(userId)).map((customer, index) => normalizeCustomer(customer, `legacy-customer-${index}`)));
   const [rates, setRates] = useState<RateMap>(() => safeLoad(rateStorageKey(userId), {}));
+  const [businessProfile, setBusinessProfile] = useState<BusinessProfile>(() => normalizeBusinessProfile(safeLoadLocal(businessProfileStorageKey(userId), DEFAULT_BUSINESS_PROFILE)));
   const [orders, setOrders] = useState<Order[]>(() => safeLoadArray<StoredOrder>(orderStorageKey(userId)).map(normalizeOrder).map((order) => {
     const savedCustomer = customers.find((customer) => customer.id === order.customerId);
     if (!savedCustomer) return order;
@@ -235,7 +247,17 @@ function useFarmData(userId: string) {
   const saveRates = (value: RateMap) => { setRates(value); persist(rateStorageKey(userId), value); };
   const saveOrders = (value: Order[]) => { setOrders(value); persist(orderStorageKey(userId), value); };
   const saveLedgerPayments = (value: LedgerPayment[]) => { setLedgerPayments(value); persist(ledgerStorageKey(userId), value); };
-  return { customers, rates, orders, ledgerPayments, saveCustomers, saveRates, saveOrders, saveLedgerPayments };
+  const saveBusinessProfile = (value: BusinessProfile) => {
+    const normalized = normalizeBusinessProfile(value);
+    try {
+      localStorage.setItem(businessProfileStorageKey(userId), JSON.stringify(normalized));
+      setBusinessProfile(normalized);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  return { customers, rates, orders, ledgerPayments, businessProfile, saveCustomers, saveRates, saveOrders, saveLedgerPayments, saveBusinessProfile };
 }
 
 function Brand({ compact = false }: { compact?: boolean }) {
@@ -283,6 +305,7 @@ function Workspace({ userId, displayName, children }: { userId: string; displayN
   return <main className="app-shell">
     <header className="topbar"><Brand />
       <div className="top-actions"><span className="user-pill"><span className="avatar">{initials}</span><span data-testid="text-current-user">{displayName}</span></span>
+        <Link className="icon-button header-settings-button" href="/workspace/settings" title="Business profile and owner settings" aria-label="Business profile and owner settings" data-testid="link-header-business-profile"><Settings2 size={17} /></Link>
         <button className="button-quiet" type="button" onClick={() => signOut({ redirectUrl: basePath || '/' })} data-testid="button-sign-out"><LogOut size={16} /> Sign out</button>
       </div>
     </header>
@@ -385,6 +408,15 @@ function CustomersPage({ userId }: { userId: string }) {
     {visible.length ? <><div className="table-head"><span>CUSTOMER</span><span>PHONE / WHATSAPP</span><span>ADDRESS</span><span>ACTIONS</span></div>{visible.map((c) => <div className="panel customer-row" key={c.id} data-testid={`row-customer-${c.id}`}><div><b>{c.name}</b></div><div><b>{c.phone}</b><small>Phone / WhatsApp</small></div><div><b>{c.address || 'Address not added'}</b></div><div className="customer-actions"><button className="icon-button" type="button" onClick={() => begin(c)} aria-label={`Edit ${c.name}`} data-testid={`button-edit-customer-${c.id}`}><Edit3 size={15} /></button><button className="icon-button" type="button" onClick={() => remove(c)} aria-label={`Remove ${c.name}`} data-testid={`button-delete-customer-${c.id}`}><Trash2 size={15} /></button></div></div>)}</>
       : <EmptyState title={query ? 'No matching customers' : 'Your directory starts here'} copy={query ? 'Try a different name, phone number, or address.' : 'Add a saved customer before creating an order. No sample records are added.'} action={!query && <button type="button" className="primary-button" onClick={() => begin()} data-testid="button-empty-add-customer"><Plus size={16} /> Add customer</button>} />}
   </>;
+}
+
+function BusinessProfileRoute() {
+  const { user } = useUser();
+  return user ? <WorkspaceGate page={<BusinessProfilePage userId={user.id} />} /> : <LoadingScreen />;
+}
+function BusinessProfilePage({ userId }: { userId: string }) {
+  const { businessProfile, saveBusinessProfile } = useFarmData(userId);
+  return <BusinessProfileSettings profile={businessProfile} onSave={saveBusinessProfile} />;
 }
 
 function RatesRoute() {
@@ -613,7 +645,7 @@ function ReceiptRoute() {
 }
 function ReceiptPage({ userId }: { userId: string }) {
   const { id } = useParams<{ id: string }>();
-  const { orders, ledgerPayments } = useFarmData(userId);
+  const { orders, ledgerPayments, businessProfile } = useFarmData(userId);
   const [status, setStatus] = useState('');
   const foundOrder = orders.find((order) => order?.id === id);
   if (!foundOrder) return <><PageHeading eyebrow="Receipt" title="Receipt unavailable" copy="This order is not saved in this account's browser records." /><EmptyState title="No matching receipt" copy="It may have been cleared from this device. Existing user data is never shared across accounts." action={<Link className="primary-button" href="/workspace/history" data-testid="link-receipt-history"><ArrowLeft size={15} /> Order history</Link>} /></>;
@@ -624,11 +656,14 @@ function ReceiptPage({ userId }: { userId: string }) {
   const date = new Date(order.createdAt || new Date(0).toISOString());
   const phoneDigits = (customer.phone || '').replace(/\D/g, '');
   const whatsAppNumber = phoneDigits.length === 10 ? `91${phoneDigits}` : phoneDigits;
+  const primaryBusinessPhone = businessProfile.primaryPhone || 'Not provided';
+  const secondaryBusinessPhone = businessProfile.secondaryPhone || 'Not provided';
+  const businessAddress = businessProfile.address || 'Not provided';
   const amountPaidText = paymentTotals
     ? `Cash: ${money(paymentTotals.cash)} · UPI: ${money(paymentTotals.upi)} · Total paid: ${money(paymentTotals.paid)}`
     : 'Not recorded for this older bill';
   const remainingDuesText = paymentTotals ? money(paymentTotals.due) : 'Not tracked for this older bill';
-  const shareText = `${FARM}\n${TAGLINE}\nBill ${order.billNumber}\nCustomer: ${customer.name || 'Customer'}\nPhone / WhatsApp: ${customer.phone || 'Not provided'}${customer.address ? `\nAddress: ${customer.address}` : ''}\nDate: ${new Intl.DateTimeFormat('en-IN', { dateStyle: 'medium', timeStyle: 'short' }).format(date)}\nQuantity: ${order.quantity} pieces\nWeight: ${order.weightKg} kg\nRate: ${money(order.ratePerKg)} / kg\nTotal Amount: ${money(totalAmount)}\nAmount Paid: ${amountPaidText}\nRemaining Dues (बकाया): ${remainingDuesText}`;
+  const shareText = `${FARM}\n${TAGLINE}\nOwner: ${businessProfile.ownerName}\nPrimary phone: ${primaryBusinessPhone}\nSecondary phone / WhatsApp: ${secondaryBusinessPhone}\nFarm / business address: ${businessAddress}\n\nBill ${order.billNumber}\nCustomer: ${customer.name || 'Customer'}\nCustomer phone / WhatsApp: ${customer.phone || 'Not provided'}${customer.address ? `\nCustomer address: ${customer.address}` : ''}\nDate: ${new Intl.DateTimeFormat('en-IN', { dateStyle: 'medium', timeStyle: 'short' }).format(date)}\nQuantity: ${order.quantity} pieces\nWeight: ${order.weightKg} kg\nRate: ${money(order.ratePerKg)} / kg\nTotal Amount: ${money(totalAmount)}\nAmount Paid: ${amountPaidText}\nRemaining Dues (बकाया): ${remainingDuesText}`;
   function shareWhatsApp() {
     if (!whatsAppNumber || whatsAppNumber.length < 10) { setStatus('This customer has no valid WhatsApp number. Update their phone number in the customer directory.'); return; }
     window.open(`https://wa.me/${whatsAppNumber}?text=${encodeURIComponent(shareText)}`, '_blank', 'noopener,noreferrer');
@@ -637,7 +672,7 @@ function ReceiptPage({ userId }: { userId: string }) {
   async function shareImage() {
     setStatus('Preparing receipt image…');
     try {
-      const canvas = document.createElement('canvas'); canvas.width = 1000; canvas.height = 1450;
+      const canvas = document.createElement('canvas'); canvas.width = 1000; canvas.height = 1600;
       const ctx = canvas.getContext('2d');
       if (!ctx) throw new Error('Canvas unavailable');
       ctx.fillStyle = '#fffdf8'; ctx.fillRect(0, 0, canvas.width, canvas.height);
@@ -647,32 +682,40 @@ function ReceiptPage({ userId }: { userId: string }) {
       ctx.drawImage(image, 75, 65, 150, 150);
       ctx.fillStyle = '#292e34'; ctx.font = 'bold 35px sans-serif'; ctx.fillText(FARM, 255, 119);
       ctx.fillStyle = '#a82f38'; ctx.font = 'bold 15px sans-serif'; ctx.fillText(TAGLINE, 257, 153);
-      ctx.strokeStyle = '#e8ded2'; ctx.beginPath(); ctx.moveTo(70, 250); ctx.lineTo(930, 250); ctx.stroke();
-      ctx.fillStyle = '#a29a8f'; ctx.font = 'bold 17px sans-serif'; ctx.fillText('RECEIPT', 76, 300);
-      ctx.fillStyle = '#303238'; ctx.font = 'bold 28px sans-serif'; ctx.fillText(order.billNumber, 76, 343);
-      ctx.fillStyle = '#67696c'; ctx.font = '22px sans-serif'; ctx.fillText(new Intl.DateTimeFormat('en-IN', { dateStyle: 'medium', timeStyle: 'short' }).format(date), 76, 390);
+      ctx.fillStyle = '#34373b'; ctx.font = 'bold 17px sans-serif'; ctx.fillText(`Owner: ${businessProfile.ownerName}`, 257, 187, 665);
+      ctx.font = '15px sans-serif'; ctx.fillText(`Primary: ${primaryBusinessPhone} · Secondary / WhatsApp: ${secondaryBusinessPhone}`, 257, 218, 665);
+      ctx.fillText(`Address: ${businessAddress}`, 257, 249, 665);
+      ctx.strokeStyle = '#e8ded2'; ctx.beginPath(); ctx.moveTo(70, 300); ctx.lineTo(930, 300); ctx.stroke();
+      ctx.fillStyle = '#a29a8f'; ctx.font = 'bold 17px sans-serif'; ctx.fillText('RECEIPT', 76, 350);
+      ctx.fillStyle = '#303238'; ctx.font = 'bold 28px sans-serif'; ctx.fillText(order.billNumber, 76, 393);
+      ctx.fillStyle = '#67696c'; ctx.font = '22px sans-serif'; ctx.fillText(new Intl.DateTimeFormat('en-IN', { dateStyle: 'medium', timeStyle: 'short' }).format(date), 76, 440);
       const lines = [
         ['CUSTOMER', customer.name || 'Customer'], ['PHONE / WHATSAPP', customer.phone || 'Not provided'], ['ADDRESS', customer.address || 'Not provided'],
         ['QUANTITY', `${order.quantity} pieces`], ['TOTAL WEIGHT', `${order.weightKg} kg`], ['RATE PER KG', `${money(order.ratePerKg)} / kg`],
       ];
-      let y = 485;
+      let y = 525;
       lines.forEach(([label, value]) => {
         ctx.fillStyle = '#9c958c'; ctx.font = 'bold 16px sans-serif'; ctx.fillText(label, 78, y);
         ctx.fillStyle = '#34373b'; ctx.font = 'bold 23px sans-serif'; ctx.textAlign = 'right'; ctx.fillText(value, 920, y, 600); ctx.textAlign = 'left';
         y += 68; ctx.strokeStyle = '#eee7dc'; ctx.beginPath(); ctx.moveTo(78, y - 30); ctx.lineTo(920, y - 30); ctx.stroke();
       });
-      ctx.fillStyle = '#a82f38'; ctx.font = 'bold 23px sans-serif'; ctx.fillText('TOTAL AMOUNT', 78, 930);
-      ctx.textAlign = 'right'; ctx.font = 'bold 46px sans-serif'; ctx.fillText(money(totalAmount), 920, 938); ctx.textAlign = 'left';
-      ctx.fillStyle = '#34373b'; ctx.font = 'bold 20px sans-serif'; ctx.fillText(`Amount paid · Cash: ${paymentTotals ? money(paymentTotals.cash) : 'Not recorded'}`, 78, 1010);
-      ctx.fillText(`Amount paid · UPI: ${paymentTotals ? money(paymentTotals.upi) : 'Not recorded'}`, 78, 1058);
-      ctx.fillText(`Amount paid · Total: ${paymentTotals ? money(paymentTotals.paid) : 'Not recorded'}`, 78, 1106);
-      ctx.fillStyle = '#a82f38'; ctx.font = 'bold 23px sans-serif'; ctx.fillText('REMAINING DUES · बकाया', 78, 1184);
-      ctx.textAlign = 'right'; ctx.font = 'bold 34px sans-serif'; ctx.fillText(remainingDuesText, 920, 1191, 620); ctx.textAlign = 'left';
-      ctx.fillStyle = '#89847d'; ctx.font = '18px sans-serif'; ctx.textAlign = 'center'; ctx.fillText('Thank you for your business.', 500, 1355); ctx.textAlign = 'left';
+      ctx.fillStyle = '#a82f38'; ctx.font = 'bold 23px sans-serif'; ctx.fillText('TOTAL AMOUNT', 78, 965);
+      ctx.textAlign = 'right'; ctx.font = 'bold 46px sans-serif'; ctx.fillText(money(totalAmount), 920, 973); ctx.textAlign = 'left';
+      ctx.fillStyle = '#34373b'; ctx.font = 'bold 20px sans-serif'; ctx.fillText(`Amount paid · Cash: ${paymentTotals ? money(paymentTotals.cash) : 'Not recorded'}`, 78, 1040);
+      ctx.fillText(`Amount paid · UPI: ${paymentTotals ? money(paymentTotals.upi) : 'Not recorded'}`, 78, 1088);
+      ctx.fillText(`Amount paid · Total: ${paymentTotals ? money(paymentTotals.paid) : 'Not recorded'}`, 78, 1136);
+      ctx.fillStyle = '#a82f38'; ctx.font = 'bold 23px sans-serif'; ctx.fillText('REMAINING DUES · बकाया', 78, 1214);
+      ctx.textAlign = 'right'; ctx.font = 'bold 34px sans-serif'; ctx.fillText(remainingDuesText, 920, 1221, 620); ctx.textAlign = 'left';
+      ctx.fillStyle = '#34373b'; ctx.font = 'bold 17px sans-serif'; ctx.textAlign = 'center';
+      ctx.fillText(businessProfile.ownerName, 500, 1345, 850);
+      ctx.font = '15px sans-serif'; ctx.fillText(`Primary: ${primaryBusinessPhone} · Secondary / WhatsApp: ${secondaryBusinessPhone}`, 500, 1380, 850);
+      ctx.fillText(`Address: ${businessAddress}`, 500, 1415, 850);
+      ctx.fillStyle = '#a82f38'; ctx.font = 'bold 13px sans-serif'; ctx.fillText(TAGLINE, 500, 1460, 850);
+      ctx.fillStyle = '#89847d'; ctx.font = '18px sans-serif'; ctx.fillText('Thank you for your business.', 500, 1520); ctx.textAlign = 'left';
       const blob = await new Promise<Blob>((resolve, reject) => canvas.toBlob((result) => result ? resolve(result) : reject(new Error('Could not generate image')), 'image/png'));
       const file = new File([blob], `${order.billNumber}.png`, { type: 'image/png' });
       if (navigator.share && (!navigator.canShare || navigator.canShare({ files: [file] }))) {
-        await navigator.share({ title: `${FARM} · ${order.billNumber}`, text: shareText, files: [file] });
+        await navigator.share({ title: `${businessProfile.ownerName} · ${order.billNumber}`, text: shareText, files: [file] });
         setStatus('Receipt image shared.');
       } else {
         const url = URL.createObjectURL(blob); const anchor = document.createElement('a'); anchor.href = url; anchor.download = `${order.billNumber}.png`; anchor.click(); URL.revokeObjectURL(url);
@@ -683,7 +726,11 @@ function ReceiptPage({ userId }: { userId: string }) {
   return <div className="receipt-page">
     <div className="page-heading"><div><span className="eyebrow">Saved order · {order.billNumber}</span><h1>Order receipt</h1><p>Share or print a copy for your customer.</p></div><Link className="secondary-button" href="/workspace/history" data-testid="link-back-history"><ArrowLeft size={15} /> History</Link></div>
     <article className="receipt-paper" data-testid="receipt-order"><div className="receipt-accent" />
-      <header className="receipt-brand"><img src={logoUrl} alt={`${FARM} logo`} data-testid="img-receipt-logo" /><div><b data-testid="text-receipt-brand">{FARM}</b><small data-testid="text-receipt-tagline">{TAGLINE}</small></div></header>
+      <header className="receipt-brand"><img src={logoUrl} alt={`${FARM} logo`} data-testid="img-receipt-logo" /><div className="receipt-brand-copy"><b data-testid="text-receipt-brand">{FARM}</b><small data-testid="text-receipt-tagline">{TAGLINE}</small>
+        <span className="receipt-profile-owner" data-testid="value-receipt-business-owner">Owner: {businessProfile.ownerName}</span>
+        <span className="receipt-profile-contact" data-testid="value-receipt-business-phones">Primary: {primaryBusinessPhone} · Secondary / WhatsApp: {secondaryBusinessPhone}</span>
+        <span className="receipt-profile-address" data-testid="value-receipt-business-address">Address: {businessAddress}</span>
+      </div></header>
       <div className="receipt-meta"><div><small>BILL NUMBER</small><strong data-testid="value-bill-number">{order.billNumber}</strong></div><div style={{ textAlign: 'right' }}><small>DATE & TIME</small><strong data-testid="value-receipt-date">{new Intl.DateTimeFormat('en-IN', { dateStyle: 'medium', timeStyle: 'short' }).format(date)}</strong></div></div>
       <section className="receipt-customer"><span className="receipt-section-label">CUSTOMER</span><strong data-testid="value-receipt-customer">{customer.name || 'Customer'}</strong><p data-testid="value-receipt-customer-contact">{customer.phone || 'Phone not provided'}{customer.address ? ` · ${customer.address}` : ''}</p></section>
       <div className="receipt-lines">
@@ -699,7 +746,12 @@ function ReceiptPage({ userId }: { userId: string }) {
         {paymentTotals && <div className="receipt-line"><span>Payment status</span><strong data-testid="value-receipt-payment-status">{paymentTotals.due === 0 ? 'Paid' : paymentTotals.paid > 0 ? 'Partial · Dues / Udhaari' : 'Unpaid · Dues / Udhaari'}</strong></div>}
       </div>
       <div className="receipt-total receipt-due-total"><span><small>REMAINING DUES · बकाया</small><span className="sr-only">Outstanding amount for this bill</span></span><strong data-testid="value-receipt-remaining-due">{remainingDuesText}</strong></div>
-      <footer className="receipt-footer">{TAGLINE}</footer>
+      <footer className="receipt-footer">
+        <strong data-testid="footer-receipt-business-owner">{businessProfile.ownerName}</strong>
+        <span data-testid="footer-receipt-business-phones">Primary: {primaryBusinessPhone} · Secondary / WhatsApp: {secondaryBusinessPhone}</span>
+        <small data-testid="footer-receipt-business-address">Address: {businessAddress}</small>
+        <em>{TAGLINE}</em>
+      </footer>
     </article>
     <div className="receipt-actions">
       <button className="primary-button" type="button" onClick={shareWhatsApp} data-testid="button-share-whatsapp"><MessageCircle size={17} /> Share text on WhatsApp</button>
@@ -728,6 +780,7 @@ function ClerkRoutes() {
       <Route path="/workspace/history" component={HistoryRoute} />
       <Route path="/workspace/dues" component={DuesRoute} />
       <Route path="/workspace/customers" component={CustomersRoute} />
+      <Route path="/workspace/settings" component={BusinessProfileRoute} />
       <Route path="/workspace/rates" component={RatesRoute} />
       <Route path="/workspace" component={DashboardRoute} />
       <Route component={NotFound} />
