@@ -5,6 +5,7 @@ import { ClerkProvider, SignIn, SignUp, useClerk, useUser } from '@clerk/react';
 import { publishableKeyFromHost } from '@clerk/react/internal';
 import { shadcn } from '@clerk/themes';
 import { ErrorBoundary } from '@/components/error-boundary';
+import DuesLedgerPage, { type DuesCustomer, type DuesPaymentHistoryItem, type RecordDuesPaymentInput } from '@/components/dues-ledger-page';
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from '@/components/ui/form';
 import { Toaster } from '@/components/ui/toaster';
 import { TooltipProvider } from '@/components/ui/tooltip';
@@ -12,7 +13,7 @@ import NotFound from '@/pages/not-found';
 import {
   ArrowLeft, ArrowRight, BadgeIndianRupee, BookOpen, CalendarDays, ChartNoAxesCombined,
   Check, ChevronRight, ClipboardList, Download, Edit3, FilePlus2, History, LogOut,
-  MessageCircle, Plus, Printer, Search, Settings2, Store, Trash2, Users, Wallet, X,
+  MessageCircle, Plus, Printer, Search, Settings2, Trash2, Users, Wallet, X,
 } from 'lucide-react';
 import { useForm } from 'react-hook-form';
 import { Link, Redirect, Route, Router as WouterRouter, Switch, useLocation, useParams } from 'wouter';
@@ -25,7 +26,7 @@ type PaymentEntry = { id: string; amount: number; method: PaymentMethod; recorde
 type LedgerAllocation = { orderId: string; amount: number };
 type LedgerPayment = {
   id: string; customerId: string; amount: number; method: PaymentMethod;
-  recordedAt: string; allocations: LedgerAllocation[];
+  recordedAt: string; allocations: LedgerAllocation[]; customerName?: string;
 };
 type RateMap = Record<string, number>;
 type Order = {
@@ -34,7 +35,11 @@ type Order = {
   paymentChoice?: PaymentChoice; payments?: PaymentEntry[];
 };
 type LegacyCustomer = Partial<Customer> & { shopName?: string; ownerName?: string; whatsapp?: string };
-type StoredOrder = Omit<Order, 'customer'> & { customer: LegacyCustomer };
+type StoredOrder = Partial<Omit<Order, 'customer'>> & {
+  customer?: LegacyCustomer | string | null;
+  customerName?: string; customerPhone?: string; customerAddress?: string;
+  phone?: string; address?: string;
+};
 const customerSchema = z.object({
   name: z.string().trim().min(1, 'Enter the customer name.'),
   phone: z.string().trim().refine((value) => {
@@ -75,21 +80,90 @@ const ledgerStorageKey = (id: string) => `rajshah-farm:payments:v1:${id}`;
 const randomId = () => globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 const roundMoney = (amount: number) => Math.round((amount + Number.EPSILON) * 100) / 100;
 
-function normalizeCustomer(value: LegacyCustomer): Customer {
+function normalizeCustomer(value?: LegacyCustomer | null, fallbackId = 'legacy-customer'): Customer {
+  const stored = value && typeof value === 'object' ? value : {};
   return {
-    id: value.id || randomId(),
-    name: value.name?.trim() || value.ownerName?.trim() || value.shopName?.trim() || 'Customer',
-    phone: value.phone?.trim() || value.whatsapp?.trim() || '',
-    address: value.address?.trim() || '',
+    id: stored.id || fallbackId,
+    name: stored.name?.trim() || stored.ownerName?.trim() || stored.shopName?.trim() || 'Customer',
+    phone: stored.phone?.trim() || stored.whatsapp?.trim() || '',
+    address: stored.address?.trim() || '',
   };
+}
+function normalizeOrder(value: StoredOrder, index: number): Order {
+  const id = typeof value?.id === 'string' && value.id ? value.id : `legacy-order-${index}`;
+  const legacyCustomer = typeof value?.customer === 'string'
+    ? { name: value.customer, phone: value.customerPhone || value.phone, address: value.customerAddress || value.address }
+    : value?.customer || { name: value?.customerName, phone: value?.customerPhone || value?.phone, address: value?.customerAddress || value?.address };
+  const customer = normalizeCustomer(legacyCustomer, value?.customerId || `legacy-customer-${id}`);
+  const quantity = Number.isFinite(value?.quantity) ? Math.max(0, Number(value?.quantity)) : 0;
+  const weightKg = Number.isFinite(value?.weightKg) ? Math.max(0, Number(value?.weightKg)) : 0;
+  const ratePerKg = Number.isFinite(value?.ratePerKg) ? Math.max(0, Number(value?.ratePerKg)) : 0;
+  const total = Number.isFinite(value?.total) ? Math.max(0, Number(value?.total)) : roundMoney(weightKg * ratePerKg);
+  const payments = Array.isArray(value?.payments)
+    ? value.payments.flatMap((payment) => {
+        if (!payment || (payment.method !== 'cash' && payment.method !== 'upi')) return [];
+        const amount = Number(payment.amount);
+        if (!Number.isFinite(amount) || amount < 0) return [];
+        return [{
+          id: payment.id || randomId(),
+          amount: roundMoney(amount),
+          method: payment.method,
+          recordedAt: typeof payment.recordedAt === 'string' ? payment.recordedAt : (value.createdAt || new Date(0).toISOString()),
+        }];
+      })
+    : undefined;
+  const paymentChoice: PaymentChoice | undefined =
+    value?.paymentChoice === 'cash' || value?.paymentChoice === 'upi' || value?.paymentChoice === 'dues'
+      ? value.paymentChoice
+      : undefined;
+  return {
+    id,
+    billNumber: typeof value?.billNumber === 'string' && value.billNumber ? value.billNumber : `RPF-LEGACY-${id}`,
+    createdAt: typeof value?.createdAt === 'string' && !Number.isNaN(Date.parse(value.createdAt)) ? value.createdAt : new Date(0).toISOString(),
+    customerId: typeof value?.customerId === 'string' && value.customerId ? value.customerId : customer.id,
+    customer,
+    quantity,
+    weightKg,
+    ratePerKg,
+    total,
+    ...(payments ? { payments } : {}),
+    ...(paymentChoice ? { paymentChoice } : {}),
+  };
+}
+function normalizeLedgerPayments(value: unknown): LedgerPayment[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((item: Partial<LedgerPayment> | null) => {
+    if (!item || (item.method !== 'cash' && item.method !== 'upi') || typeof item.customerId !== 'string') return [];
+    const amount = Number(item.amount);
+    if (!Number.isFinite(amount) || amount <= 0) return [];
+    const allocations = Array.isArray(item.allocations)
+      ? item.allocations.flatMap((allocation) => {
+          const allocated = Number(allocation?.amount);
+          return allocation && typeof allocation.orderId === 'string' && Number.isFinite(allocated) && allocated > 0
+            ? [{ orderId: allocation.orderId, amount: roundMoney(allocated) }]
+            : [];
+        })
+      : [];
+    return [{
+      id: typeof item.id === 'string' && item.id ? item.id : randomId(),
+      customerId: item.customerId,
+      customerName: typeof item.customerName === 'string' ? item.customerName : undefined,
+      amount: roundMoney(amount),
+      method: item.method,
+      recordedAt: typeof item.recordedAt === 'string' ? item.recordedAt : new Date(0).toISOString(),
+      allocations,
+    }];
+  });
 }
 function orderPaymentTotals(order: Order, ledgerPayments: LedgerPayment[]) {
   if (!Array.isArray(order.payments)) return null;
   const totals: Record<PaymentMethod, number> = { cash: 0, upi: 0 };
-  for (const payment of order.payments) totals[payment.method] += payment.amount;
+  for (const payment of order.payments) {
+    if (payment?.method === 'cash' || payment?.method === 'upi') totals[payment.method] += Number(payment.amount) || 0;
+  }
   for (const payment of ledgerPayments) {
     if (payment.customerId !== order.customerId) continue;
-    const allocated = payment.allocations
+    const allocated = (payment.allocations || [])
       .filter((allocation) => allocation.orderId === order.id)
       .reduce((sum, allocation) => sum + allocation.amount, 0);
     totals[payment.method] += allocated;
@@ -131,16 +205,32 @@ function safeLoad<T>(key: string, fallback: T): T {
   if (!raw) return fallback;
   try { return JSON.parse(raw) as T; } catch { return fallback; }
 }
+function safeLoadArray<T>(key: string): T[] {
+  const value = safeLoad<unknown>(key, []);
+  return Array.isArray(value) ? value as T[] : [];
+}
 function persist<T>(key: string, value: T) {
   const serialized = JSON.stringify(value);
   try { localStorage.setItem(key, serialized); }
   catch { try { sessionStorage.setItem(key, serialized); } catch { /* browser storage unavailable */ } }
 }
 function useFarmData(userId: string) {
-  const [customers, setCustomers] = useState<Customer[]>(() => safeLoad<LegacyCustomer[]>(customerStorageKey(userId), []).map(normalizeCustomer));
+  const [customers, setCustomers] = useState<Customer[]>(() => safeLoadArray<LegacyCustomer>(customerStorageKey(userId)).map((customer, index) => normalizeCustomer(customer, `legacy-customer-${index}`)));
   const [rates, setRates] = useState<RateMap>(() => safeLoad(rateStorageKey(userId), {}));
-  const [orders, setOrders] = useState<Order[]>(() => safeLoad<StoredOrder[]>(orderStorageKey(userId), []).map((order) => ({ ...order, customer: normalizeCustomer(order.customer) })));
-  const [ledgerPayments, setLedgerPayments] = useState<LedgerPayment[]>(() => safeLoad(ledgerStorageKey(userId), []));
+  const [orders, setOrders] = useState<Order[]>(() => safeLoadArray<StoredOrder>(orderStorageKey(userId)).map(normalizeOrder).map((order) => {
+    const savedCustomer = customers.find((customer) => customer.id === order.customerId);
+    if (!savedCustomer) return order;
+    return {
+      ...order,
+      customer: {
+        ...savedCustomer,
+        name: order.customer.name === 'Customer' ? savedCustomer.name : order.customer.name,
+        phone: order.customer.phone || savedCustomer.phone,
+        address: order.customer.address || savedCustomer.address,
+      },
+    };
+  }));
+  const [ledgerPayments, setLedgerPayments] = useState<LedgerPayment[]>(() => normalizeLedgerPayments(safeLoad<unknown>(ledgerStorageKey(userId), [])));
   const saveCustomers = (value: Customer[]) => { setCustomers(value); persist(customerStorageKey(userId), value); };
   const saveRates = (value: RateMap) => { setRates(value); persist(rateStorageKey(userId), value); };
   const saveOrders = (value: Order[]) => { setOrders(value); persist(orderStorageKey(userId), value); };
@@ -225,7 +315,7 @@ function Dashboard({ userId }: { userId: string }) {
     </div>
     <div className="quick-actions">
       <Link href="/workspace/new-order" className="panel quick-action" data-testid="link-quick-new-order"><span className="quick-icon"><FilePlus2 size={19} /></span><span><b>Record an order</b><small>Customer, pieces and weight</small></span><ChevronRight size={17} /></Link>
-      <Link href="/workspace/customers" className="panel quick-action" data-testid="link-quick-customers"><span className="quick-icon"><Store size={19} /></span><span><b>Customer directory</b><small>Manage customer contacts</small></span><ChevronRight size={17} /></Link>
+      <Link href="/workspace/customers" className="panel quick-action" data-testid="link-quick-customers"><span className="quick-icon"><Users size={19} /></span><span><b>Customer directory</b><small>Manage customer contacts</small></span><ChevronRight size={17} /></Link>
       <Link href="/workspace/history" className="panel quick-action" data-testid="link-quick-history"><span className="quick-icon"><BookOpen size={19} /></span><span><b>Order history</b><small>Browse all saved receipts</small></span><ChevronRight size={17} /></Link>
     </div>
     <div className="section-row"><h2>Recent orders</h2><Link className="text-link" href="/workspace/history" data-testid="link-view-all-orders">View history <ArrowRight size={14} /></Link></div>
@@ -240,10 +330,16 @@ function EmptyState({ title, copy, action }: { title: string; copy: string; acti
 }
 function OrderList({ orders }: { orders: Order[] }) {
   const [, setLocation] = useLocation();
-  return <div className="order-list" data-testid="list-orders">{orders.map((order) => <button className="panel order-row" key={order.id} type="button" onClick={() => setLocation(`/workspace/receipt/${order.id}`)} data-testid={`button-open-order-${order.id}`}>
-    <span className="order-main"><span className="order-initial">{order.customer.name.slice(0, 1).toUpperCase()}</span><span><b>{order.customer.name}</b><small>{order.billNumber} · {new Intl.DateTimeFormat('en-IN', { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(order.createdAt))}</small></span></span>
-    <span className="order-amount">{money(order.total)}</span><span className="order-weight">{order.quantity} pieces · {order.weightKg} kg</span>
-  </button>)}</div>;
+  return <div className="order-list" data-testid="list-orders">{orders.map((order, index) => {
+    const id = order?.id || `legacy-order-${index}`;
+    const name = order?.customer?.name?.trim() || 'Customer';
+    const billNumber = order?.billNumber || 'Older bill';
+    const date = order?.createdAt && !Number.isNaN(Date.parse(order.createdAt)) ? order.createdAt : new Date(0).toISOString();
+    return <button className="panel order-row" key={id} type="button" onClick={() => setLocation(`/workspace/receipt/${id}`)} data-testid={`button-open-order-${id}`}>
+      <span className="order-main"><span className="order-initial">{name.slice(0, 1).toUpperCase()}</span><span><b>{name}</b><small>{billNumber} · {new Intl.DateTimeFormat('en-IN', { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(date))}</small></span></span>
+      <span className="order-amount">{money(Number(order?.total) || 0)}</span><span className="order-weight">{Number(order?.quantity) || 0} pieces · {Number(order?.weightKg) || 0} kg</span>
+    </button>;
+  })}</div>;
 }
 
 function CustomersRoute() {
@@ -344,23 +440,44 @@ function NewOrderPage({ userId }: { userId: string }) {
   const rate = rates[today];
   const form = useForm<OrderFormValues>({
     resolver: zodResolver(orderSchema),
-    defaultValues: { customerId: '', quantity: '', weight: '' },
+    defaultValues: { customerId: '', quantity: '', weight: '', paymentChoice: '', paidNow: '0', partialMethod: 'cash' },
   });
   const customerId = form.watch('customerId');
   const quantity = form.watch('quantity');
   const weight = form.watch('weight');
+  const paymentChoice = form.watch('paymentChoice');
+  const paidNowValue = form.watch('paidNow');
   const amount = Number(weight) * (rate || 0);
+  const totalPreview = Number.isFinite(amount) && amount > 0 ? roundMoney(amount) : 0;
   const chosenCustomer = customers.find((c) => c.id === customerId);
   function submit(values: OrderFormValues) {
     const pieces = Number(quantity), kg = Number(weight);
     if (!customers.length) { form.setError('root', { type: 'manual', message: 'Add a customer to the directory before recording an order.' }); return; }
     if (!rate || rate <= 0) { form.setError('root', { type: 'manual', message: "Save today's mandi rate before recording an order." }); return; }
     if (!chosenCustomer) { form.setError('customerId', { type: 'manual', message: 'Select a saved customer.' }); return; }
+    const total = roundMoney(kg * rate);
+    if (!['cash', 'upi', 'dues'].includes(values.paymentChoice)) {
+      form.setError('paymentChoice', { type: 'manual', message: 'Choose Cash, UPI, or Dues / Udhaari.' });
+      return;
+    }
+    const selectedPayment = values.paymentChoice as PaymentChoice;
+    const payments: PaymentEntry[] = [];
+    if (selectedPayment === 'cash' || selectedPayment === 'upi') {
+      payments.push({ id: randomId(), amount: total, method: selectedPayment, recordedAt: new Date().toISOString() });
+    } else {
+      const paidNow = roundMoney(Number(values.paidNow));
+      if (!Number.isFinite(paidNow) || paidNow < 0 || paidNow > total) {
+        form.setError('paidNow', { type: 'manual', message: `Amount received must be between ₹0 and ${money(total)}.` });
+        return;
+      }
+      if (paidNow > 0) payments.push({ id: randomId(), amount: paidNow, method: values.partialMethod, recordedAt: new Date().toISOString() });
+    }
     const now = new Date();
     const order: Order = {
       id: randomId(), billNumber: `RPF-${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}-${String(Date.now()).slice(-5)}`,
       createdAt: now.toISOString(), customerId: values.customerId, customer: { ...chosenCustomer },
-      quantity: pieces, weightKg: kg, ratePerKg: rate, total: Number((kg * rate).toFixed(2)),
+      quantity: pieces, weightKg: kg, ratePerKg: rate, total,
+      paymentChoice: selectedPayment, payments,
     };
     saveOrders([order, ...orders]); setLocation(`/workspace/receipt/${order.id}`);
   }
@@ -371,13 +488,21 @@ function NewOrderPage({ userId }: { userId: string }) {
     <div className="form-layout">
       <Form {...form}><form className="panel form-card" onSubmit={form.handleSubmit(submit)} noValidate data-testid="form-new-order"><h2>Order details</h2>
         {form.formState.errors.root?.message && <div className="error-state" role="alert" data-testid="error-new-order">{form.formState.errors.root.message}</div>}
-        <FormField control={form.control} name="customerId" render={({ field }) => <FormItem className="form-field"><FormLabel>Customer / shop *</FormLabel><FormControl><select {...field} data-testid="select-order-customer"><option value="">Select a saved customer</option>{customers.map((c) => <option key={c.id} value={c.id}>{c.shopName} · {c.ownerName}</option>)}</select></FormControl><FormMessage /></FormItem>} />
-        {chosenCustomer && <div className="notice" style={{ marginBottom: 15 }} data-testid="text-selected-customer">{chosenCustomer.ownerName} · {chosenCustomer.whatsapp}{chosenCustomer.address ? ` · ${chosenCustomer.address}` : ''}</div>}
+        <FormField control={form.control} name="customerId" render={({ field }) => <FormItem className="form-field"><FormLabel>Customer *</FormLabel><FormControl><select {...field} data-testid="select-order-customer"><option value="">Select a saved customer</option>{customers.map((c) => <option key={c.id} value={c.id}>{c.name} · {c.phone}</option>)}</select></FormControl><FormMessage /></FormItem>} />
+        {chosenCustomer && <div className="notice" style={{ marginBottom: 15 }} data-testid="text-selected-customer">{chosenCustomer.name} · {chosenCustomer.phone}{chosenCustomer.address ? ` · ${chosenCustomer.address}` : ''}</div>}
         <div className="form-grid">
           <FormField control={form.control} name="quantity" render={({ field }) => <FormItem className="form-field"><FormLabel>Whole chicken quantity (pieces) *</FormLabel><FormControl><input {...field} type="number" min="1" step="1" placeholder="e.g. 12" data-testid="input-order-quantity" /></FormControl><FormMessage /></FormItem>} />
           <FormField control={form.control} name="weight" render={({ field }) => <FormItem className="form-field"><FormLabel>Total weight (kg) *</FormLabel><FormControl><input {...field} type="number" min="0.01" step="0.01" placeholder="Total order weight" data-testid="input-order-weight" /></FormControl><FormMessage /></FormItem>} />
         </div>
-        <div className="amount-preview" aria-live="polite"><span><small>LIVE ORDER TOTAL</small><span className="form-help">{weight && rate ? `${weight} kg × ${money(rate)} / kg` : rate ? `${money(rate)} / kg today` : 'Set today’s rate to calculate'}</span></span><strong data-testid="value-live-order-total">{money(Number.isFinite(amount) ? amount : 0)}</strong></div>
+        <FormField control={form.control} name="paymentChoice" render={({ field }) => <FormItem className="form-field"><FormLabel>Payment status *</FormLabel><FormControl><select {...field} data-testid="select-order-payment-status"><option value="">Choose payment status</option><option value="cash">Cash (Paid)</option><option value="upi">UPI (Paid)</option><option value="dues">Dues / Udhaari (Unpaid or Partial)</option></select></FormControl><FormMessage /></FormItem>} />
+        {paymentChoice === 'dues' && <>
+          <FormField control={form.control} name="paidNow" render={({ field }) => <FormItem className="form-field"><FormLabel>Amount paid now (enter 0 if fully unpaid)</FormLabel><FormControl><input {...field} type="number" inputMode="decimal" min="0" max={Number.isFinite(amount) ? amount : undefined} step="0.01" placeholder="0.00" data-testid="input-order-paid-now" /></FormControl><FormMessage /></FormItem>} />
+          {Number(paidNowValue) > 0 && <FormField control={form.control} name="partialMethod" render={({ field }) => <FormItem className="form-field"><FormLabel>Partial payment received via</FormLabel><FormControl><select {...field} data-testid="select-order-partial-payment-method"><option value="cash">Cash</option><option value="upi">UPI</option></select></FormControl><FormMessage /></FormItem>} />}
+        </>}
+        <div className="amount-preview" aria-live="polite"><span><small>LIVE ORDER TOTAL</small><span className="form-help">{weight && rate ? `${weight} kg × ${money(rate)} / kg` : rate ? `${money(rate)} / kg today` : 'Set today’s rate to calculate'}</span></span><strong data-testid="value-live-order-total">{money(totalPreview)}</strong></div>
+        {paymentChoice && <div className="notice" data-testid="text-order-payment-preview">
+          Amount paid now: {money(paymentChoice === 'cash' || paymentChoice === 'upi' ? totalPreview : Math.min(Number(paidNowValue) || 0, totalPreview))} · Remaining dues (बकाया): {money(Math.max(0, totalPreview - (paymentChoice === 'cash' || paymentChoice === 'upi' ? totalPreview : Number(paidNowValue) || 0)))}
+        </div>}
         <div className="form-actions"><button className="primary-button" type="submit" disabled={!rate || !customers.length} data-testid="button-save-order"><Check size={16} /> Save order & receipt</button><Link className="secondary-button" href="/workspace" data-testid="link-cancel-order">Cancel</Link></div>
       </form></Form>
       <aside className="panel form-card"><span className="eyebrow">Today's rate</span><h2 style={{ marginTop: 10 }}>{rate ? money(rate) : 'Not set'}<span style={{ fontFamily: 'var(--app-font-sans)', fontSize: 13, color: '#888' }}>{rate ? ' / kg' : ''}</span></h2><p className="form-help">The order saves a frozen copy of this rate. Later daily changes do not alter existing receipts.</p><Link className="text-link" href="/workspace/rates" data-testid="link-edit-todays-rate"><Settings2 size={14} /> Manage daily rate</Link></aside>
@@ -389,14 +514,96 @@ function HistoryRoute() {
   const { user } = useUser();
   return user ? <WorkspaceGate page={<HistoryPage userId={user.id} />} /> : <LoadingScreen />;
 }
+function DuesRoute() {
+  const { user } = useUser();
+  return user ? <WorkspaceGate page={<CustomerDuesPage userId={user.id} />} /> : <LoadingScreen />;
+}
+function CustomerDuesPage({ userId }: { userId: string }) {
+  const { customers, orders, ledgerPayments, saveLedgerPayments } = useFarmData(userId);
+  const customerById = new Map(customers.map((customer) => [customer.id, customer]));
+  const groups = new Map<string, { customer: Customer; openBills: DuesCustomer['openBills'] }>();
+  for (const order of orders) {
+    const totals = orderPaymentTotals(order, ledgerPayments);
+    if (!totals || totals.due <= 0) continue;
+    const id = order.customerId || order.customer?.id || `legacy-${order.id}`;
+    const current = groups.get(id);
+    const customer = customerById.get(id) || order.customer || normalizeCustomer(undefined, id);
+    const openBills = current?.openBills ?? [];
+    openBills.push({
+      id: order.id,
+      billNumber: order.billNumber || `RPF-${order.id}`,
+      createdAt: order.createdAt || new Date(0).toISOString(),
+      total: Number(order.total) || 0,
+      paidAmount: totals.paid,
+      remainingDue: totals.due,
+    });
+    groups.set(id, { customer, openBills });
+  }
+  const dueCustomers: DuesCustomer[] = Array.from(groups, ([id, group]) => ({
+    ...group.customer,
+    id,
+    totalDue: roundMoney(group.openBills.reduce((sum, bill) => sum + bill.remainingDue, 0)),
+    openBills: group.openBills.sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.billNumber.localeCompare(b.billNumber)),
+  })).sort((a, b) => a.name.localeCompare(b.name));
+  const orderById = new Map(orders.map((order) => [order.id, order]));
+  const paymentHistory: DuesPaymentHistoryItem[] = [...ledgerPayments]
+    .sort((a, b) => b.recordedAt.localeCompare(a.recordedAt))
+    .map((payment) => ({
+      id: payment.id,
+      customerName: payment.customerName || customerById.get(payment.customerId)?.name || orderById.get(payment.allocations[0]?.orderId)?.customer?.name || 'Customer',
+      amount: payment.amount,
+      method: payment.method,
+      recordedAt: payment.recordedAt,
+      allocations: payment.allocations.map((allocation) => ({
+        billNumber: orderById.get(allocation.orderId)?.billNumber || `Bill ${allocation.orderId}`,
+        amount: allocation.amount,
+      })),
+    }));
+
+  function recordPayment(input: RecordDuesPaymentInput): string | null {
+    const customer = dueCustomers.find((entry) => entry.id === input.customerId);
+    if (!customer) return 'This customer has no outstanding bills.';
+    const amount = roundMoney(Number(input.amount));
+    if (!Number.isFinite(amount) || amount <= 0) return 'Enter a payment amount greater than zero.';
+    if (amount > customer.totalDue + 0.001) return `The payment is greater than the outstanding balance of ${money(customer.totalDue)}.`;
+    if (input.method !== 'cash' && input.method !== 'upi') return 'Choose Cash or UPI as the payment method.';
+
+    let remaining = amount;
+    const allocations: LedgerAllocation[] = [];
+    const oldestFirst = orders
+      .filter((order) => order.customerId === customer.id && orderPaymentTotals(order, ledgerPayments)?.due)
+      .sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.billNumber.localeCompare(b.billNumber));
+    for (const order of oldestFirst) {
+      if (remaining <= 0) break;
+      const due = orderRemainingDue(order, ledgerPayments);
+      const allocated = roundMoney(Math.min(remaining, due));
+      if (allocated > 0) allocations.push({ orderId: order.id, amount: allocated });
+      remaining = roundMoney(Math.max(0, remaining - allocated));
+    }
+    if (remaining > 0.001) return 'The payment could not be fully allocated. Refresh the page and try again.';
+    const payment: LedgerPayment = {
+      id: randomId(),
+      customerId: customer.id,
+      customerName: customer.name,
+      amount,
+      method: input.method,
+      recordedAt: new Date().toISOString(),
+      allocations,
+    };
+    saveLedgerPayments([...ledgerPayments, payment]);
+    return null;
+  }
+
+  return <DuesLedgerPage customers={dueCustomers} paymentHistory={paymentHistory} onRecordPayment={recordPayment} />;
+}
 function HistoryPage({ userId }: { userId: string }) {
   const { orders } = useFarmData(userId);
   const [query, setQuery] = useState('');
   const sorted = useMemo(() => [...orders].sort((a, b) => b.createdAt.localeCompare(a.createdAt)), [orders]);
-  const visible = sorted.filter((o) => `${o.billNumber} ${o.customer.shopName} ${o.customer.ownerName}`.toLowerCase().includes(query.toLowerCase()));
+  const visible = sorted.filter((order) => `${order?.billNumber || ''} ${order?.customer?.name || ''} ${order?.customer?.phone || ''}`.toLowerCase().includes(query.toLowerCase()));
   return <><PageHeading eyebrow="Saved records" title="Order history" copy={`${orders.length} ${orders.length === 1 ? 'order' : 'orders'} recorded on this device.`} />
-    <div className="list-toolbar"><div className="searchbox"><Search size={16} /><input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search bill, shop or owner" aria-label="Search orders" data-testid="input-search-orders" /></div><span className="pill" data-testid="text-history-count">{visible.length} shown</span></div>
-    {visible.length ? <OrderList orders={visible} /> : <EmptyState title={query ? 'No matching orders' : 'No orders yet'} copy={query ? 'Try another bill number or customer.' : 'Saved orders will appear here newest first. Create an order to produce its receipt.'} action={!query && <Link className="primary-button" href="/workspace/new-order" data-testid="link-history-new-order"><Plus size={16} /> New order</Link>} />}
+    <div className="list-toolbar"><div className="searchbox"><Search size={16} /><input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search bill, customer, or phone" aria-label="Search orders" data-testid="input-search-orders" /></div><span className="pill" data-testid="text-history-count">{visible.length} shown</span></div>
+    {visible.length ? <OrderList orders={visible} /> : <EmptyState title={query ? 'No matching orders' : 'No orders yet'} copy={query ? 'Try another bill number, customer name, or phone.' : 'Saved orders will appear here newest first. Create an order to produce its receipt.'} action={!query && <Link className="primary-button" href="/workspace/new-order" data-testid="link-history-new-order"><Plus size={16} /> New order</Link>} />}
   </>;
 }
 
@@ -406,24 +613,31 @@ function ReceiptRoute() {
 }
 function ReceiptPage({ userId }: { userId: string }) {
   const { id } = useParams<{ id: string }>();
-  const { orders } = useFarmData(userId);
+  const { orders, ledgerPayments } = useFarmData(userId);
   const [status, setStatus] = useState('');
-  const foundOrder = orders.find((o) => o.id === id);
+  const foundOrder = orders.find((order) => order?.id === id);
   if (!foundOrder) return <><PageHeading eyebrow="Receipt" title="Receipt unavailable" copy="This order is not saved in this account's browser records." /><EmptyState title="No matching receipt" copy="It may have been cleared from this device. Existing user data is never shared across accounts." action={<Link className="primary-button" href="/workspace/history" data-testid="link-receipt-history"><ArrowLeft size={15} /> Order history</Link>} /></>;
-  const order: Order = foundOrder;
-  const date = new Date(order.createdAt);
-  const phoneDigits = order.customer.whatsapp.replace(/\D/g, '');
+  const order = normalizeOrder(foundOrder, 0);
+  const customer = order.customer || normalizeCustomer(undefined, order.customerId);
+  const paymentTotals = orderPaymentTotals(order, ledgerPayments);
+  const totalAmount = Number(order.total) || 0;
+  const date = new Date(order.createdAt || new Date(0).toISOString());
+  const phoneDigits = (customer.phone || '').replace(/\D/g, '');
   const whatsAppNumber = phoneDigits.length === 10 ? `91${phoneDigits}` : phoneDigits;
-  const shareText = `${FARM}\n${TAGLINE}\nReceipt ${order.billNumber}\nShop: ${order.customer.shopName}\nOwner: ${order.customer.ownerName}\nDate: ${new Intl.DateTimeFormat('en-IN', { dateStyle: 'medium', timeStyle: 'short' }).format(date)}\nQuantity: ${order.quantity} pieces\nWeight: ${order.weightKg} kg\nRate: ${money(order.ratePerKg)} / kg\nTotal: ${money(order.total)}`;
+  const amountPaidText = paymentTotals
+    ? `Cash: ${money(paymentTotals.cash)} · UPI: ${money(paymentTotals.upi)} · Total paid: ${money(paymentTotals.paid)}`
+    : 'Not recorded for this older bill';
+  const remainingDuesText = paymentTotals ? money(paymentTotals.due) : 'Not tracked for this older bill';
+  const shareText = `${FARM}\n${TAGLINE}\nBill ${order.billNumber}\nCustomer: ${customer.name || 'Customer'}\nPhone / WhatsApp: ${customer.phone || 'Not provided'}${customer.address ? `\nAddress: ${customer.address}` : ''}\nDate: ${new Intl.DateTimeFormat('en-IN', { dateStyle: 'medium', timeStyle: 'short' }).format(date)}\nQuantity: ${order.quantity} pieces\nWeight: ${order.weightKg} kg\nRate: ${money(order.ratePerKg)} / kg\nTotal Amount: ${money(totalAmount)}\nAmount Paid: ${amountPaidText}\nRemaining Dues (बकाया): ${remainingDuesText}`;
   function shareWhatsApp() {
-    if (!whatsAppNumber || whatsAppNumber.length < 10) { setStatus('This customer has no valid WhatsApp number. Edit the customer record to update it.'); return; }
+    if (!whatsAppNumber || whatsAppNumber.length < 10) { setStatus('This customer has no valid WhatsApp number. Update their phone number in the customer directory.'); return; }
     window.open(`https://wa.me/${whatsAppNumber}?text=${encodeURIComponent(shareText)}`, '_blank', 'noopener,noreferrer');
     setStatus('WhatsApp opened with receipt details as text. Add the receipt image separately if needed.');
   }
   async function shareImage() {
     setStatus('Preparing receipt image…');
     try {
-      const canvas = document.createElement('canvas'); canvas.width = 1000; canvas.height = 1320;
+      const canvas = document.createElement('canvas'); canvas.width = 1000; canvas.height = 1450;
       const ctx = canvas.getContext('2d');
       if (!ctx) throw new Error('Canvas unavailable');
       ctx.fillStyle = '#fffdf8'; ctx.fillRect(0, 0, canvas.width, canvas.height);
@@ -438,18 +652,23 @@ function ReceiptPage({ userId }: { userId: string }) {
       ctx.fillStyle = '#303238'; ctx.font = 'bold 28px sans-serif'; ctx.fillText(order.billNumber, 76, 343);
       ctx.fillStyle = '#67696c'; ctx.font = '22px sans-serif'; ctx.fillText(new Intl.DateTimeFormat('en-IN', { dateStyle: 'medium', timeStyle: 'short' }).format(date), 76, 390);
       const lines = [
-        ['SHOP', order.customer.shopName], ['OWNER', order.customer.ownerName], ['WHATSAPP', order.customer.whatsapp],
+        ['CUSTOMER', customer.name || 'Customer'], ['PHONE / WHATSAPP', customer.phone || 'Not provided'], ['ADDRESS', customer.address || 'Not provided'],
         ['QUANTITY', `${order.quantity} pieces`], ['TOTAL WEIGHT', `${order.weightKg} kg`], ['RATE PER KG', `${money(order.ratePerKg)} / kg`],
       ];
       let y = 485;
       lines.forEach(([label, value]) => {
         ctx.fillStyle = '#9c958c'; ctx.font = 'bold 16px sans-serif'; ctx.fillText(label, 78, y);
-        ctx.fillStyle = '#34373b'; ctx.font = 'bold 23px sans-serif'; ctx.textAlign = 'right'; ctx.fillText(value, 920, y); ctx.textAlign = 'left';
-        y += 80; ctx.strokeStyle = '#eee7dc'; ctx.beginPath(); ctx.moveTo(78, y - 34); ctx.lineTo(920, y - 34); ctx.stroke();
+        ctx.fillStyle = '#34373b'; ctx.font = 'bold 23px sans-serif'; ctx.textAlign = 'right'; ctx.fillText(value, 920, y, 600); ctx.textAlign = 'left';
+        y += 68; ctx.strokeStyle = '#eee7dc'; ctx.beginPath(); ctx.moveTo(78, y - 30); ctx.lineTo(920, y - 30); ctx.stroke();
       });
-      ctx.fillStyle = '#a82f38'; ctx.font = 'bold 23px sans-serif'; ctx.fillText('TOTAL AMOUNT', 78, 1010);
-      ctx.textAlign = 'right'; ctx.font = 'bold 46px sans-serif'; ctx.fillText(money(order.total), 920, 1015); ctx.textAlign = 'left';
-      ctx.fillStyle = '#89847d'; ctx.font = '18px sans-serif'; ctx.textAlign = 'center'; ctx.fillText('Thank you for your business.', 500, 1150); ctx.textAlign = 'left';
+      ctx.fillStyle = '#a82f38'; ctx.font = 'bold 23px sans-serif'; ctx.fillText('TOTAL AMOUNT', 78, 930);
+      ctx.textAlign = 'right'; ctx.font = 'bold 46px sans-serif'; ctx.fillText(money(totalAmount), 920, 938); ctx.textAlign = 'left';
+      ctx.fillStyle = '#34373b'; ctx.font = 'bold 20px sans-serif'; ctx.fillText(`Amount paid · Cash: ${paymentTotals ? money(paymentTotals.cash) : 'Not recorded'}`, 78, 1010);
+      ctx.fillText(`Amount paid · UPI: ${paymentTotals ? money(paymentTotals.upi) : 'Not recorded'}`, 78, 1058);
+      ctx.fillText(`Amount paid · Total: ${paymentTotals ? money(paymentTotals.paid) : 'Not recorded'}`, 78, 1106);
+      ctx.fillStyle = '#a82f38'; ctx.font = 'bold 23px sans-serif'; ctx.fillText('REMAINING DUES · बकाया', 78, 1184);
+      ctx.textAlign = 'right'; ctx.font = 'bold 34px sans-serif'; ctx.fillText(remainingDuesText, 920, 1191, 620); ctx.textAlign = 'left';
+      ctx.fillStyle = '#89847d'; ctx.font = '18px sans-serif'; ctx.textAlign = 'center'; ctx.fillText('Thank you for your business.', 500, 1355); ctx.textAlign = 'left';
       const blob = await new Promise<Blob>((resolve, reject) => canvas.toBlob((result) => result ? resolve(result) : reject(new Error('Could not generate image')), 'image/png'));
       const file = new File([blob], `${order.billNumber}.png`, { type: 'image/png' });
       if (navigator.share && (!navigator.canShare || navigator.canShare({ files: [file] }))) {
@@ -466,13 +685,20 @@ function ReceiptPage({ userId }: { userId: string }) {
     <article className="receipt-paper" data-testid="receipt-order"><div className="receipt-accent" />
       <header className="receipt-brand"><img src={logoUrl} alt={`${FARM} logo`} data-testid="img-receipt-logo" /><div><b data-testid="text-receipt-brand">{FARM}</b><small data-testid="text-receipt-tagline">{TAGLINE}</small></div></header>
       <div className="receipt-meta"><div><small>BILL NUMBER</small><strong data-testid="value-bill-number">{order.billNumber}</strong></div><div style={{ textAlign: 'right' }}><small>DATE & TIME</small><strong data-testid="value-receipt-date">{new Intl.DateTimeFormat('en-IN', { dateStyle: 'medium', timeStyle: 'short' }).format(date)}</strong></div></div>
-      <section className="receipt-customer"><span className="receipt-section-label">CUSTOMER / SHOP</span><strong data-testid="value-receipt-shop">{order.customer.shopName}</strong><p data-testid="value-receipt-owner">{order.customer.ownerName} · {order.customer.whatsapp}{order.customer.address ? ` · ${order.customer.address}` : ''}</p></section>
+      <section className="receipt-customer"><span className="receipt-section-label">CUSTOMER</span><strong data-testid="value-receipt-customer">{customer.name || 'Customer'}</strong><p data-testid="value-receipt-customer-contact">{customer.phone || 'Phone not provided'}{customer.address ? ` · ${customer.address}` : ''}</p></section>
       <div className="receipt-lines">
         <div className="receipt-line"><span>Whole chicken quantity</span><strong data-testid="value-receipt-quantity">{order.quantity} pieces</strong></div>
         <div className="receipt-line"><span>Total weight</span><strong data-testid="value-receipt-weight">{order.weightKg} kg</strong></div>
         <div className="receipt-line"><span>Rate per kilogram</span><strong data-testid="value-receipt-rate">{money(order.ratePerKg)} / kg</strong></div>
       </div>
-      <div className="receipt-total"><span><small>TOTAL · WEIGHT × RATE</small><span className="sr-only">Calculated order total</span></span><strong data-testid="value-receipt-total">{money(order.total)}</strong></div>
+      <div className="receipt-payment-lines">
+        <div className="receipt-line"><span>Total Amount</span><strong data-testid="value-receipt-total">{money(totalAmount)}</strong></div>
+        <div className="receipt-line"><span>Amount Paid · Cash</span><strong data-testid="value-receipt-paid-cash">{paymentTotals ? money(paymentTotals.cash) : 'Not recorded'}</strong></div>
+        <div className="receipt-line"><span>Amount Paid · UPI</span><strong data-testid="value-receipt-paid-upi">{paymentTotals ? money(paymentTotals.upi) : 'Not recorded'}</strong></div>
+        <div className="receipt-line"><span>Amount Paid · Total</span><strong data-testid="value-receipt-paid-total">{paymentTotals ? money(paymentTotals.paid) : 'Not recorded'}</strong></div>
+        {paymentTotals && <div className="receipt-line"><span>Payment status</span><strong data-testid="value-receipt-payment-status">{paymentTotals.due === 0 ? 'Paid' : paymentTotals.paid > 0 ? 'Partial · Dues / Udhaari' : 'Unpaid · Dues / Udhaari'}</strong></div>}
+      </div>
+      <div className="receipt-total receipt-due-total"><span><small>REMAINING DUES · बकाया</small><span className="sr-only">Outstanding amount for this bill</span></span><strong data-testid="value-receipt-remaining-due">{remainingDuesText}</strong></div>
       <footer className="receipt-footer">{TAGLINE}</footer>
     </article>
     <div className="receipt-actions">
@@ -500,6 +726,7 @@ function ClerkRoutes() {
       <Route path="/workspace/receipt/:id" component={ReceiptRoute} />
       <Route path="/workspace/new-order" component={NewOrderRoute} />
       <Route path="/workspace/history" component={HistoryRoute} />
+      <Route path="/workspace/dues" component={DuesRoute} />
       <Route path="/workspace/customers" component={CustomersRoute} />
       <Route path="/workspace/rates" component={RatesRoute} />
       <Route path="/workspace" component={DashboardRoute} />
